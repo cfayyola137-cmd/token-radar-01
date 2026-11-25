@@ -1,393 +1,577 @@
-// Token Radar 01 Dashboard Script
+// Token Radar Analytics Dashboard
+// Dynamic client-side renderer for protocol rankings, metrics, filters, and farm itineraries.
+
 (function () {
   'use strict';
 
-  var DATA = window.RADAR;
-  if (!DATA) return;
-  var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  const dataset = window.RADAR;
+  if (!dataset) return;
 
-  var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-  function fmtUsd(n) {
-    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    if (Math.abs(n) >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
-    if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
-    if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
-    return usd.format(n);
+  const rootEl = document.getElementById('board');
+  const appState = {
+    query: '',
+    categoryFilter: 'all',
+    chainFilter: 'all',
+    activeTab: 'pre-token',
+    sortCol: 'implied',
+    sortDir: -1,
+    activeSlug: null,
+  };
+
+  const currencyFmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+  function formatUsd(amount) {
+    if (amount === null || amount === undefined || !Number.isFinite(amount)) return 'N/A';
+    if (Math.abs(amount) >= 1e9) return '$' + (amount / 1e9).toFixed(2) + 'B';
+    if (Math.abs(amount) >= 1e6) return '$' + (amount / 1e6).toFixed(1) + 'M';
+    if (Math.abs(amount) >= 1e3) return '$' + Math.round(amount / 1e3) + 'K';
+    return currencyFmt.format(amount);
   }
-  function fmtPct(n) {
-    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+
+  function formatPct(val) {
+    if (val === null || val === undefined || !Number.isFinite(val)) return 'N/A';
+    return (val > 0 ? '+' : '') + val.toFixed(2) + '%';
   }
-  function fmtAge(days) {
+
+  function formatAge(days) {
     if (days === null || days === undefined) return 'unknown';
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
 
-  function el(tag, attrs) {
-    var node = document.createElement(tag);
+  function createElement(tagName, attrs, ...children) {
+    const el = document.createElement(tagName);
     if (attrs) {
-      Object.keys(attrs).forEach(function (k) {
-        if (k === 'class') node.className = attrs[k];
-        else if (k === 'text') node.textContent = attrs[k];
-        else if (k === 'html') node.innerHTML = attrs[k];
-        else if (k.slice(0, 2) === 'on') node.addEventListener(k.slice(2), attrs[k]);
-        else if (attrs[k] !== null && attrs[k] !== undefined) node.setAttribute(k, attrs[k]);
+      Object.keys(attrs).forEach((key) => {
+        if (key === 'class') {
+          el.className = attrs[key];
+        } else if (key === 'text') {
+          el.textContent = attrs[key];
+        } else if (key === 'html') {
+          el.innerHTML = attrs[key];
+        } else if (key.startsWith('on')) {
+          el.addEventListener(key.slice(2), attrs[key]);
+        } else if (attrs[key] !== null && attrs[key] !== undefined) {
+          el.setAttribute(key, attrs[key]);
+        }
       });
     }
-    for (var i = 2; i < arguments.length; i++) {
-      var child = arguments[i];
-      if (child === null || child === undefined) continue;
-      if (Array.isArray(child)) child.forEach(function (c) { if (c) node.appendChild(c); });
-      else if (typeof child === 'string') node.appendChild(document.createTextNode(child));
-      else node.appendChild(child);
-    }
-    return node;
+    children.forEach((child) => {
+      if (child === null || child === undefined) return;
+      if (Array.isArray(child)) {
+        child.forEach((c) => {
+          if (c) el.appendChild(c);
+        });
+      } else if (typeof child === 'string' || typeof child === 'number') {
+        el.appendChild(document.createTextNode(String(child)));
+      } else {
+        el.appendChild(child);
+      }
+    });
+    return el;
   }
 
-  // Client-side farm plan generator matching model.ts
-  function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'Arbitrum'; }
-  function capitalFor(p) {
+  function resolveChain(p) {
+    return p.chains && p.chains.length > 0 ? p.chains[0] : 'Arbitrum';
+  }
+
+  function resolveCapital(p) {
     if (p.tvl_usd >= 5e9) return 300;
     if (p.tvl_usd >= 1e9) return 200;
     if (p.tvl_usd >= 1e8) return 100;
     return 50;
   }
-  function holdDaysFor(age) {
+
+  function resolveHoldDays(age) {
     if (age === null || age === undefined) return 45;
     if (age < 180) return 60;
     if (age < 365) return 45;
     return 30;
   }
-  function farmSteps(p) {
-    var chain = chainOf(p);
-    var capital = capitalFor(p);
-    var hold = holdDaysFor(p.age_days);
-    var name = p.name;
-    var c = (p.category || '').toLowerCase();
 
-    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) {
+  function generateFarmSteps(p) {
+    const network = resolveChain(p);
+    const amount = resolveCapital(p);
+    const duration = resolveHoldDays(p.age_days);
+    const title = p.name;
+    const cat = (p.category || '').toLowerCase();
+
+    if (cat.includes('lend') || cat.includes('cdp') || cat.includes('collateral')) {
       return [
-        { text: 'Fund a clean non-custodial wallet with ' + capital + ' USDC and native gas on ' + chain + '.', cost: '~&2-4 gas', time: '5 min' },
-        { text: 'Supply ' + capital + ' USDC as collateral on ' + name + ' and borrow a conservative amount against it.', cost: '~&3-5 gas & borrow fee', time: '10 min' },
-        { text: 'Maintain position health factor above 2.0 and perform weekly interactions for ' + hold + ' days.', cost: '~&2 gas weekly', time: hold + ' days' },
-        { text: 'Verify eligibility on the official ' + name + ' rewards or points dashboard before unwinding.', cost: 'Free check', time: '5 min' }
+        { text: `Deposit ${amount} USDC and native gas into a secure wallet on ${network}.`, cost: `~$2-4 gas`, time: `5 min` },
+        { text: `Supply ${amount} USDC as collateral on ${title} and open a modest borrow position.`, cost: `~$3-5 fees`, time: `10 min` },
+        { text: `Keep collateral health factor above 2.0 with weekly check-ins for ${duration} days.`, cost: `~$2 weekly gas`, time: `${duration} days` },
+        { text: `Confirm participation on official ${title} dashboard before closing.`, cost: `Free check`, time: `5 min` },
       ];
     }
-    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) {
+    if (cat.includes('dex') || cat.includes('yield') || cat.includes('farm')) {
       return [
-        { text: 'Prepare a non-custodial wallet with ' + capital + ' USDC and native gas for ' + chain + '.', cost: '~&2 gas', time: '5 min' },
-        { text: 'Add liquidity to ' + name + "'s primary trading pair pool and stake LP tokens in their farm vault.", cost: '~&4-8 LP & gas fees', time: '12 min' },
-        { text: 'Hold active LP stake for at least ' + hold + ' days with bi-weekly reward compounding.', cost: '~&2 gas per compound', time: hold + ' days' },
-        { text: 'Check official ' + name + ' governance forum and points portal to claim rewards.', cost: 'Free check', time: '5 min' }
+        { text: `Prepare a clean wallet with ${amount} USDC and gas on ${network}.`, cost: `~$2 gas`, time: `5 min` },
+        { text: `Add liquidity to the primary pool on ${title} and stake the LP tokens.`, cost: `~$4-8 LP fees`, time: `12 min` },
+        { text: `Hold liquidity position for ${duration} days with bi-weekly reward compounding.`, cost: `~$2 compound fee`, time: `${duration} days` },
+        { text: `Check ${title} governance and reward claims portal.`, cost: `Free check`, time: `5 min` },
       ];
     }
-    if (c.indexOf('bridge') >= 0 || c.indexOf('canonical bridge') >= 0) {
+    if (cat.includes('bridge')) {
       return [
-        { text: 'Deposit ' + capital + ' USDC into ' + name + ' from Ethereum or source chain to target chain.', cost: '~&3-8 bridge fee', time: '10 min' },
-        { text: 'Execute at least 2 additional cross-chain transfers or swaps within 14 days.', cost: '~&4-10 transfer fees', time: '15 min' },
-        { text: 'Retain cross-chain balance or LP position for ' + hold + ' days to ensure epoch inclusion.', cost: 'Capital locked', time: hold + ' days' },
-        { text: 'Confirm activity logging on official ' + name + ' explorer / points checker.', cost: 'Free check', time: '5 min' }
+        { text: `Transfer ${amount} USDC through ${title} from source chain to destination.`, cost: `~$3-8 bridge toll`, time: `10 min` },
+        { text: `Execute at least 2 additional cross-chain swaps within 14 days.`, cost: `~$4-10 transfer fees`, time: `15 min` },
+        { text: `Maintain cross-chain liquidity balance for ${duration} days.`, cost: `Capital locked`, time: `${duration} days` },
+        { text: `Verify activity on official ${title} explorer.`, cost: `Free check`, time: `5 min` },
       ];
     }
     return [
-      { text: 'Fund a dedicated wallet with ' + capital + ' USDC and native gas on ' + chain + '.', cost: '~&2 gas', time: '5 min' },
-      { text: 'Deposit ' + capital + ' USDC into ' + name + ' core contract vault on ' + chain + '.', cost: '~&3-5 gas', time: '10 min' },
-      { text: 'Maintain active participation without withdrawing for at least ' + hold + ' days.', cost: '~&1-2 weekly gas', time: hold + ' days' },
-      { text: 'Check official ' + name + ' announcements and points portal for snapshots.', cost: 'Free check', time: '5 min' }
+      { text: `Fund a dedicated non-custodial address with ${amount} USDC on ${network}.`, cost: `~$2 gas`, time: `5 min` },
+      { text: `Deposit ${amount} USDC into the core vaults of ${title}.`, cost: `~$3-5 gas`, time: `10 min` },
+      { text: `Maintain position without withdrawal for at least ${duration} days.`, cost: `~$1-2 weekly gas`, time: `${duration} days` },
+      { text: `Check official ${title} announcements for snapshot confirmation.`, cost: `Free check`, time: `5 min` },
     ];
   }
 
-  function readHash() {
-    var hash = window.location.hash.replace(/^#/, '');
+  function readUrlHash() {
+    const hash = window.location.hash.replace(/^#/, '');
     if (!hash) return;
-    var params = new URLSearchParams(hash);
-    if (params.get('q')) state.q = params.get('q');
-    if (params.get('p')) state.selected = params.get('p');
-    if (params.get('category')) state.category = params.get('category');
-    if (params.get('chain')) state.chain = params.get('chain');
-  }
-  function writeHash() {
-    var params = new URLSearchParams();
-    if (state.q) params.set('q', state.q);
-    if (state.category !== 'all') params.set('category', state.category);
-    if (state.chain !== 'all') params.set('chain', state.chain);
-    if (state.selected) params.set('p', state.selected);
-    var next = params.toString();
-    if (next) window.history.replaceState(null, '', '#' + next);
-    else window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    const params = new URLSearchParams(hash);
+    if (params.has('q')) appState.query = params.get('q');
+    if (params.has('category')) appState.categoryFilter = params.get('category');
+    if (params.has('chain')) appState.chainFilter = params.get('chain');
+    if (params.has('p')) appState.activeSlug = params.get('p');
   }
 
-  function rows() {
-    var q = state.q.trim().toLowerCase();
-    return DATA.rows.filter(function (r) {
-      if (state.category !== 'all' && r.category !== state.category) return false;
-      if (state.chain !== 'all' && (!r.chains || r.chains.indexOf(state.chain) < 0)) return false;
-      if (!q) return true;
-      var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
-      return hay.indexOf(q) >= 0;
+  function writeUrlHash() {
+    const params = new URLSearchParams();
+    if (appState.query) params.set('q', appState.query);
+    if (appState.categoryFilter !== 'all') params.set('category', appState.categoryFilter);
+    if (appState.chainFilter !== 'all') params.set('chain', appState.chainFilter);
+    if (appState.activeSlug) params.set('p', appState.activeSlug);
+    const queryStr = params.toString();
+    if (queryStr) {
+      window.history.replaceState(null, '', '#' + queryStr);
+    } else {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }
+
+  function filterRows() {
+    const term = appState.query.trim().toLowerCase();
+    return dataset.rows.filter((r) => {
+      if (appState.categoryFilter !== 'all' && r.category !== appState.categoryFilter) return false;
+      if (appState.chainFilter !== 'all' && (!r.chains || !r.chains.includes(appState.chainFilter))) return false;
+      if (!term) return true;
+      const haystack = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
+      return haystack.includes(term);
     });
   }
 
-  function sortedRows(list) {
-    var key = state.sort;
-    return list.slice().sort(function (a, b) {
-      var av, bv;
-      if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
-      else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
-      else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
-      else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
-      else if (key === 'confidence') {
-        var rankMap = { high: 3, medium: 2, low: 1 };
-        av = rankMap[a.confidence] || 0; bv = rankMap[b.confidence] || 0;
+  function sortRows(list) {
+    const key = appState.sortCol;
+    const direction = appState.sortDir;
+    return list.slice().sort((a, b) => {
+      let valA, valB;
+      if (key === 'name') {
+        valA = a.name.toLowerCase();
+        valB = b.name.toLowerCase();
+      } else if (key === 'tvl') {
+        valA = a.tvl_usd;
+        valB = b.tvl_usd;
+      } else if (key === 'growth') {
+        valA = a.change_7d === null ? -Infinity : a.change_7d;
+        valB = b.change_7d === null ? -Infinity : b.change_7d;
+      } else if (key === 'age') {
+        valA = a.age_days === null ? Infinity : a.age_days;
+        valB = b.age_days === null ? Infinity : b.age_days;
+      } else if (key === 'confidence') {
+        const rankMap = { high: 3, medium: 2, low: 1 };
+        valA = rankMap[a.confidence] || 0;
+        valB = rankMap[b.confidence] || 0;
+      } else {
+        valA = a.implied_value_usd;
+        valB = b.implied_value_usd;
       }
-      else { av = a.implied_value_usd; bv = b.implied_value_usd; }
-      if (av < bv) return -state.dir;
-      if (av > bv) return state.dir;
+
+      if (valA < valB) return -direction;
+      if (valA > valB) return direction;
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
     });
   }
 
-  function stickyHeader() {
-    return el('div', { class: 'sticky-header' },
-      el('div', { class: 'shell top' },
-        el('div', { class: 'brand' }, el('span', { class: 'mark' }), el('span', { class: 'brand-name', text: 'Token Radar 01' })),
-        el('div', { class: 'top-metrics' },
-          el('div', { class: 'metric-badge' }, el('span', { text: 'Total TVL at Stake' }), el('b', { text: fmtUsd(DATA.total_tvl_stake) })),
-          el('div', { class: 'metric-badge' }, el('span', { text: 'High Confidence' }), el('b', { text: DATA.high_confidence_count + ' protocols' })),
-          el('div', { class: 'metric-badge' }, el('span', { text: 'Median Implied' }), el('b', { text: fmtUsd(DATA.median_implied_value) }))
+  function renderHeader() {
+    return createElement('div', { class: 'sticky-header' },
+      createElement('div', { class: 'shell top' },
+        createElement('div', { class: 'brand' },
+          createElement('span', { class: 'mark' }),
+          createElement('span', { class: 'brand-name', text: 'Token Radar 01' })
+        ),
+        createElement('div', { class: 'top-metrics' },
+          createElement('div', { class: 'metric-badge' },
+            createElement('span', { text: 'Total TVL Stake' }),
+            createElement('b', { text: formatUsd(dataset.total_tvl_stake) })
+          ),
+          createElement('div', { class: 'metric-badge' },
+            createElement('span', { text: 'High Confidence' }),
+            createElement('b', { text: `${dataset.high_confidence_count} protocols` })
+          ),
+          createElement('div', { class: 'metric-badge' },
+            createElement('span', { text: 'Median Implied' }),
+            createElement('b', { text: formatUsd(dataset.median_implied_value) })
+          )
         )
       )
     );
   }
 
-  function lede() {
-    return el('section', { class: 'lede' },
-      el('div', null,
-        el('h1', { text: DATA.watchlist_size + ' Watchlist Protocols Ranked by Implied Value' }),
-        el('p', { text: 'The watchlist covers every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M TVL and no active token. The early radar adds ' + DATA.early_size + ' pre-token protocols below the floor. Implied valuation is derived from TVL, category multiplier, 7d growth, and youth urgency.' })
+  function renderLede() {
+    return createElement('section', { class: 'lede' },
+      createElement('div', null,
+        createElement('h1', { text: `${dataset.watchlist_size} Watchlist Protocols Ranked by Implied Value` }),
+        createElement('p', {
+          text: `Covering protocols with at least $${Math.round(dataset.floor_usd / 1e6)}M TVL and no active token. Early radar adds ${dataset.early_size} protocols below the floor. Valuations incorporate TVL, category modifiers, 7d growth, and youth urgency.`
+        })
       ),
-      el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist Covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
-        el('div', { class: 'fact' }, el('span', { text: 'Total Scored Rows' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early Pre-Token Rows' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live Tokens Set Aside' }), el('b', { text: String(DATA.live_size) }))
+      createElement('div', { class: 'facts' },
+        createElement('div', { class: 'fact' }, createElement('span', { text: 'Watchlist Size' }), createElement('b', { text: String(dataset.watchlist_size) })),
+        createElement('div', { class: 'fact' }, createElement('span', { text: 'Board Rows' }), createElement('b', { text: String(dataset.board_size) })),
+        createElement('div', { class: 'fact' }, createElement('span', { text: 'Early Pre-Token' }), createElement('b', { text: String(dataset.early_size) })),
+        createElement('div', { class: 'fact' }, createElement('span', { text: 'Live Tokens' }), createElement('b', { text: String(dataset.live_size) }))
       )
     );
   }
 
-  function controls() {
-    var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).sort();
-    var chainsSet = new Set();
-    DATA.rows.forEach(function (r) { if (r.chains) r.chains.forEach(function (c) { chainsSet.add(c); }); });
-    var chains = Array.from(chainsSet).sort();
+  function renderControls() {
+    const categories = Array.from(new Set(dataset.rows.map((r) => r.category || 'Other'))).sort();
+    const chainSet = new Set();
+    dataset.rows.forEach((r) => {
+      if (r.chains) r.chains.forEach((c) => chainSet.add(c));
+    });
+    const chains = Array.from(chainSet).sort();
 
-    var search = el('input', { type: 'search', id: 'q', placeholder: 'Search name, category, chain...', value: state.q, 'aria-label': 'Search board' });
-    search.addEventListener('input', function () { state.q = search.value; writeHash(); render(); });
-
-    var catSelect = el('select', { id: 'category', 'aria-label': 'Filter by category' },
-      el('option', { value: 'all', text: 'All categories' }),
-      categories.map(function (c) { return el('option', { value: c, text: c, selected: c === state.category ? 'selected' : null }); })
-    );
-    catSelect.addEventListener('change', function () { state.category = catSelect.value; writeHash(); render(); });
-
-    var chainSelect = el('select', { id: 'chain', 'aria-label': 'Filter by chain' },
-      el('option', { value: 'all', text: 'All chains' }),
-      chains.map(function (ch) { return el('option', { value: ch, text: ch, selected: ch === state.chain ? 'selected' : null }); })
-    );
-    chainSelect.addEventListener('change', function () { state.chain = chainSelect.value; writeHash(); render(); });
-
-    var preBtn = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-Token', onclick: function () { state.tab = 'pre-token'; render(); } });
-    var liveBtn = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live Token', onclick: function () { state.tab = 'live'; render(); } });
-
-    return el('div', { class: 'controls' },
-      el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
-      el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), catSelect),
-      el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chainSelect),
-      el('div', { class: 'field' }, el('span', { class: 'sub', text: 'View Mode' }), el('div', { class: 'tabs' }, preBtn, liveBtn)),
-      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live protocols' })
-    );
-  }
-
-  function sortHeader(key, label) {
-    return el('th', { scope: 'col' },
-      el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
-        label,
-        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
-      )
-    );
-  }
-
-  function boardTable() {
-    var list = sortedRows(rows());
-    if (list.length === 0) {
-      return el('div', { class: 'panel' }, el('div', { class: 'empty' },
-        el('h2', { text: 'No protocol matches your filter criteria' }),
-        el('p', { text: 'Try clearing your search query or selecting a different category/chain filter.' }),
-        el('button', { class: 'button primary', type: 'button', text: 'Reset Filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; writeHash(); render(); } })
-      ));
-    }
-    var max = list[0].implied_value_usd || 1;
-    var tbody = el('tbody');
-    list.forEach(function (r) {
-      var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
-      var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
-      var confClass = 'badge badge-' + r.confidence;
-
-      // Sparkline mini SVG hint for trend
-      var trendSvg = '<svg width="40" height="16" viewBox="0 0 40 16"><path d="M2 12 L12 ' + (r.change_7d !== null && r.change_7d > 0 ? '4' : '12') + ' L22 8 L38 3" fill="none" stroke="' + (r.change_7d !== null && r.change_7d >= 0 ? '#10b981' : '#ef4444') + '" stroke-width="1.5"/></svg>';
-
-      var tr = el('tr', {
-        'data-selected': state.selected === r.slug ? 'true' : 'false',
-        tabindex: '0',
-        onclick: function () { openDetail(r.slug); },
-        onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
+    const searchInput = createElement('input', {
+      type: 'search',
+      id: 'q',
+      placeholder: 'Search name, category, chain...',
+      value: appState.query,
+      'aria-label': 'Search board',
+      oninput: (e) => {
+        appState.query = e.target.value;
+        writeUrlHash();
+        renderApp();
       },
-        el('td', { class: 'num', text: String(r.rank) }),
-        el('td', null, el('div', { class: 'name' },
-          el('b', { text: r.name }),
-          el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'multi-chain') })
-        )),
-        el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
-        el('td', { class: 'num ' + growthClass, text: growth }),
-        el('td', { class: 'num', text: fmtAge(r.age_days) }),
-        el('td', null, el('span', { class: confClass, text: r.confidence })),
-        el('td', null, el('div', { class: 'bar-cell' },
-          el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(4, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
-          el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
-        )),
-        el('td', null, el('div', { class: 'sparkline', html: trendSvg }))
+    });
+
+    const categorySelect = createElement('select', {
+      id: 'category',
+      'aria-label': 'Filter by category',
+      onchange: (e) => {
+        appState.categoryFilter = e.target.value;
+        writeUrlHash();
+        renderApp();
+      },
+    },
+      createElement('option', { value: 'all', text: 'All categories' }),
+      categories.map((c) => createElement('option', { value: c, text: c, selected: c === appState.categoryFilter ? 'selected' : null }))
+    );
+
+    const chainSelect = createElement('select', {
+      id: 'chain',
+      'aria-label': 'Filter by chain',
+      onchange: (e) => {
+        appState.chainFilter = e.target.value;
+        writeUrlHash();
+        renderApp();
+      },
+    },
+      createElement('option', { value: 'all', text: 'All chains' }),
+      chains.map((ch) => createElement('option', { value: ch, text: ch, selected: ch === appState.chainFilter ? 'selected' : null }))
+    );
+
+    const preBtn = createElement('button', {
+      type: 'button',
+      'aria-pressed': appState.activeTab === 'pre-token' ? 'true' : 'false',
+      text: 'Pre-Token',
+      onclick: () => {
+        appState.activeTab = 'pre-token';
+        renderApp();
+      },
+    });
+
+    const liveBtn = createElement('button', {
+      type: 'button',
+      'aria-pressed': appState.activeTab === 'live' ? 'true' : 'false',
+      text: 'Live Token',
+      onclick: () => {
+        appState.activeTab = 'live';
+        renderApp();
+      },
+    });
+
+    return createElement('div', { class: 'controls' },
+      createElement('div', { class: 'field' }, createElement('label', { for: 'q', text: 'Search' }), searchInput),
+      createElement('div', { class: 'field' }, createElement('label', { for: 'category', text: 'Category' }), categorySelect),
+      createElement('div', { class: 'field' }, createElement('label', { for: 'chain', text: 'Chain' }), chainSelect),
+      createElement('div', { class: 'field' }, createElement('span', { class: 'sub', text: 'View Mode' }), createElement('div', { class: 'tabs' }, preBtn, liveBtn)),
+      createElement('span', { class: 'count', text: appState.activeTab === 'pre-token' ? `${filterRows().length} protocols shown` : `${dataset.live.length} live tokens` })
+    );
+  }
+
+  function createSortHeader(key, label) {
+    const isActive = appState.sortCol === key;
+    const indicator = isActive ? (appState.sortDir < 0 ? ' ▼' : ' ▲') : '';
+    return createElement('th', { scope: 'col' },
+      createElement('button', {
+        type: 'button',
+        onclick: () => {
+          if (appState.sortCol === key) {
+            appState.sortDir = -appState.sortDir;
+          } else {
+            appState.sortCol = key;
+            appState.sortDir = -1;
+          }
+          renderApp();
+        },
+      }, label + indicator)
+    );
+  }
+
+  function renderBoardTable() {
+    const list = sortRows(filterRows());
+    if (list.length === 0) {
+      return createElement('div', { class: 'panel' },
+        createElement('div', { class: 'empty' },
+          createElement('h2', { text: 'No protocols match your search or filter' }),
+          createElement('p', { text: 'Try relaxing your search query or resetting category and chain filters.' }),
+          createElement('button', {
+            class: 'button primary',
+            type: 'button',
+            text: 'Reset Filters',
+            onclick: () => {
+              appState.query = '';
+              appState.categoryFilter = 'all';
+              appState.chainFilter = 'all';
+              writeUrlHash();
+              renderApp();
+            },
+          })
+        )
       );
-      tbody.appendChild(tr);
+    }
+
+    const maxValue = list[0].implied_value_usd || 1;
+    const tbody = createElement('tbody');
+
+    list.forEach((r) => {
+      const chg = r.change_7d;
+      const chgClass = chg === null ? '' : chg >= 0 ? 'pos' : 'neg';
+      const confBadge = `badge badge-${r.confidence}`;
+      const svgTrend = `<svg width="40" height="16" viewBox="0 0 40 16"><path d="M2 12 L12 ${chg !== null && chg > 0 ? '4' : '12'} L22 8 L38 3" fill="none" stroke="${chg !== null && chg >= 0 ? '#10b981' : '#ef4444'}" stroke-width="1.5"/></svg>`;
+
+      const rowEl = createElement('tr', {
+        'data-selected': appState.activeSlug === r.slug ? 'true' : 'false',
+        tabindex: '0',
+        onclick: () => openDetailModal(r.slug),
+        onkeydown: (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openDetailModal(r.slug);
+          }
+        },
+      },
+        createElement('td', { class: 'num', text: String(r.rank) }),
+        createElement('td', null,
+          createElement('div', { class: 'name' },
+            createElement('b', { text: r.name }),
+            createElement('span', { class: 'sub', text: `${r.category || 'Other'} on ${r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'multi-chain'}` })
+          )
+        ),
+        createElement('td', { class: 'num', text: formatUsd(r.tvl_usd) }),
+        createElement('td', { class: `num ${chgClass}`, text: formatPct(chg) }),
+        createElement('td', { class: 'num', text: formatAge(r.age_days) }),
+        createElement('td', null, createElement('span', { class: confBadge, text: r.confidence })),
+        createElement('td', null,
+          createElement('div', { class: 'bar-cell' },
+            createElement('div', { class: 'bar', 'aria-hidden': 'true' },
+              createElement('i', { style: `width:${Math.max(4, Math.round((r.implied_value_usd / maxValue) * 100))}%` })
+            ),
+            createElement('span', { class: 'num', text: formatUsd(r.implied_value_usd) })
+          )
+        ),
+        createElement('td', null, createElement('div', { class: 'sparkline', html: svgTrend }))
+      );
+      tbody.appendChild(rowEl);
     });
 
-    return el('div', { class: 'panel' },
-      el('div', { class: 'table-wrap' },
-        el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols ranked by implied valuation. Click any row for deep model metrics and farm plan.' }),
-          el('thead', null, el('tr', null,
-            sortHeader('implied', 'Rank'),
-            sortHeader('name', 'Protocol'),
-            sortHeader('tvl', 'TVL'),
-            sortHeader('growth', '7d %'),
-            sortHeader('age', 'Age'),
-            sortHeader('confidence', 'Conf'),
-            sortHeader('implied', 'Implied Value'),
-            el('th', { scope: 'col', text: 'Trend' })
-          )),
+    return createElement('div', { class: 'panel' },
+      createElement('div', { class: 'table-wrap' },
+        createElement('table', null,
+          createElement('caption', { class: 'sub', text: 'Ranked pre-token protocols. Click any row for valuation breakdown and step-by-step farm plan.' }),
+          createElement('thead', null,
+            createElement('tr', null,
+              createSortHeader('implied', 'Rank'),
+              createSortHeader('name', 'Protocol'),
+              createSortHeader('tvl', 'TVL'),
+              createSortHeader('growth', '7d %'),
+              createSortHeader('age', 'Age'),
+              createSortHeader('confidence', 'Conf'),
+              createSortHeader('implied', 'Implied Value'),
+              createElement('th', { scope: 'col', text: 'Trend' })
+            )
+          ),
           tbody
         )
       )
     );
   }
 
-  function liveTable() {
-    var tbody = el('tbody');
-    DATA.live.forEach(function (r) {
-      tbody.appendChild(el('tr', null,
-        el('td', { class: 'num', text: 'live' }),
-        el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'multi-chain') }))),
-        el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
-        el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
-        el('td', { class: 'num', text: fmtUsd(r.mcap_usd) }),
-        el('td', null, el('span', { class: 'badge badge-high', text: 'Trading' }))
-      ));
+  function renderLiveTable() {
+    const tbody = createElement('tbody');
+    dataset.live.forEach((item) => {
+      const chg = item.change_7d;
+      const chgClass = chg === null ? '' : chg >= 0 ? 'pos' : 'neg';
+      tbody.appendChild(
+        createElement('tr', null,
+          createElement('td', { class: 'num', text: 'live' }),
+          createElement('td', null,
+            createElement('div', { class: 'name' },
+              createElement('b', { text: item.name }),
+              createElement('span', { class: 'sub', text: `${item.category || 'Other'} on ${item.chains && item.chains.length ? item.chains.slice(0, 2).join(', ') : 'multi-chain'}` })
+            )
+          ),
+          createElement('td', { class: 'num', text: formatUsd(item.tvl_usd) }),
+          createElement('td', { class: `num ${chgClass}`, text: formatPct(chg) }),
+          createElement('td', { class: 'num', text: formatUsd(item.mcap_usd) }),
+          createElement('td', null, createElement('span', { class: 'badge badge-high', text: 'Trading' }))
+        )
+      );
     });
-    return el('div', { class: 'panel' },
-      el('div', { class: 'table-wrap' },
-        el('table', null,
-          el('caption', { class: 'sub', text: 'Live tokens set aside from pre-token rankings: market capitalization is factual market data.' }),
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Status' }), el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'TVL' }), el('th', { scope: 'col', text: '7d' }), el('th', { scope: 'col', text: 'Market Cap' }), el('th', { scope: 'col', text: 'Token' }))),
+
+    return createElement('div', { class: 'panel' },
+      createElement('div', { class: 'table-wrap' },
+        createElement('table', null,
+          createElement('caption', { class: 'sub', text: 'Live tokens set aside from pre-token scoring model.' }),
+          createElement('thead', null,
+            createElement('tr', null,
+              createElement('th', { scope: 'col', text: 'Status' }),
+              createElement('th', { scope: 'col', text: 'Protocol' }),
+              createElement('th', { scope: 'col', text: 'TVL' }),
+              createElement('th', { scope: 'col', text: '7d' }),
+              createElement('th', { scope: 'col', text: 'Market Cap' }),
+              createElement('th', { scope: 'col', text: 'Token' })
+            )
+          ),
           tbody
         )
       )
     );
   }
 
-  function modelPanel() {
-    var m = DATA.model;
-    return el('section', { class: 'panel model' },
-      el('h2', { text: 'Implied Valuation Formula & Methodology' }),
-      el('p', { class: 'sub', text: 'Every row is computed deterministically from the snapshot using sector multipliers, 7d growth adjustments, and youth urgency factors.' }),
-      el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x category_multiplier x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x urgency_factor )'
+  function renderModelPanel() {
+    const m = dataset.model;
+    return createElement('section', { class: 'panel model' },
+      createElement('h2', { text: 'Valuation Methodology & Model Parameters' }),
+      createElement('p', { class: 'sub', text: 'Implied valuation is calculated deterministically from multi-chain TVL, category weighting, clamped 7d growth, and youth velocity.' }),
+      createElement('div', { class: 'formula' },
+        `implied = round( tvl_usd × ${m.base_multiple} × category_multiplier × (1 + clamp(change_7d, ${m.growth_floor}, ${m.growth_cap}) / 100 × ${m.growth_weight}) × urgency_factor )`
       ),
-      el('p', { class: 'sub', text: 'Younger protocols with substantial TVL and robust multi-chain presence receive higher urgency multipliers. Confidence tiers reflect data completeness across category, chains, listed date, and 7d change.' })
+      createElement('p', { class: 'sub', text: `Model version: ${dataset.model_version}. Confidence tiers reflect data completeness across category, chains, listing date, and 7d metrics.` })
     );
   }
 
-  var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
-  dialog.addEventListener('close', function () { state.selected = null; writeHash(); });
+  const modalDialog = createElement('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
+  modalDialog.addEventListener('close', () => {
+    appState.activeSlug = null;
+    writeUrlHash();
+  });
 
-  function openDetail(slug) {
-    var row = DATA.rows.filter(function (r) { return r.slug === slug; })[0];
+  function openDetailModal(slug) {
+    const row = dataset.rows.find((r) => r.slug === slug);
     if (!row) return;
-    state.selected = slug;
-    writeHash();
-    dialog.textContent = '';
-    var steps = farmSteps(row);
+    appState.activeSlug = slug;
+    writeUrlHash();
+    modalDialog.textContent = '';
 
-    dialog.appendChild(el('div', { class: 'detail-head' },
-      el('div', null,
-        el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + ' (Confidence: ' + row.confidence.toUpperCase() + ')' }),
-        el('h2', { id: 'detail-title', text: row.name }),
-        el('p', { class: 'sub', text: (row.category || 'Other') + ' on ' + (row.chains && row.chains.length ? row.chains.join(', ') : 'multi-chain') })
-      ),
-      el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: '✕', onclick: function () { dialog.close(); } })
-    ));
+    const steps = generateFarmSteps(row);
 
-    dialog.appendChild(el('section', { class: 'detail-section' },
-      el('h3', { text: 'Why this protocol is ranked' }),
-      el('p', { class: 'sub', text: row.why })
-    ));
+    modalDialog.appendChild(
+      createElement('div', { class: 'detail-head' },
+        createElement('div', null,
+          createElement('span', { class: 'brand-name', text: `Rank ${row.rank} of ${dataset.board_size} (Confidence: ${row.confidence.toUpperCase()})` }),
+          createElement('h2', { id: 'detail-title', text: row.name }),
+          createElement('p', { class: 'sub', text: `${row.category || 'Other'} on ${row.chains && row.chains.length ? row.chains.join(', ') : 'multi-chain'}` })
+        ),
+        createElement('button', {
+          class: 'close',
+          type: 'button',
+          'aria-label': 'Close dialog',
+          text: '✕',
+          onclick: () => modalDialog.close(),
+        })
+      )
+    );
 
-    dialog.appendChild(el('section', { class: 'detail-section' },
-      el('h3', { text: 'Valuation Breakdown' }),
-      el('div', { class: 'equation' },
-        el('div', null, el('span', { text: 'Protocol TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: '7-Day Change' }), el('b', { class: 'num ' + (row.change_7d !== null && row.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(row.change_7d) })),
-        el('div', null, el('span', { text: 'Age with No Token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-        el('div', null, el('span', { text: 'Growth Multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
-        el('div', null, el('span', { text: 'Urgency Factor' }), el('b', { class: 'num', text: String(row.urgency_factor) })),
-        el('div', null, el('span', { text: 'Implied Valuation' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
-      ),
-      el('p', { class: 'sub', text: 'Model version ' + DATA.model_version + '. Confidence tier: ' + row.confidence.toUpperCase() + '.' })
-    ));
+    modalDialog.appendChild(
+      createElement('section', { class: 'detail-section' },
+        createElement('h3', { text: 'Why this protocol is ranked' }),
+        createElement('p', { class: 'sub', text: row.why })
+      )
+    );
 
-    dialog.appendChild(el('section', { class: 'detail-section' },
-      el('h3', { text: 'Concrete Farm Plan & Steps' }),
-      el('ol', { class: 'steps' }, steps.map(function (s) {
-        return el('li', null, el('b', { text: s.text }), el('span', { class: 'cost', text: 'Cost: ' + s.cost + ' | Time: ' + s.time }));
-      }))
-    ));
+    modalDialog.appendChild(
+      createElement('section', { class: 'detail-section' },
+        createElement('h3', { text: 'Valuation Equation Factors' }),
+        createElement('div', { class: 'equation' },
+          createElement('div', null, createElement('span', { text: 'TVL (USD)' }), createElement('b', { class: 'num', text: formatUsd(row.tvl_usd) })),
+          createElement('div', null, createElement('span', { text: '7-Day Change' }), createElement('b', { class: `num ${row.change_7d !== null && row.change_7d >= 0 ? 'pos' : 'neg'}`, text: formatPct(row.change_7d) })),
+          createElement('div', null, createElement('span', { text: 'Protocol Age' }), createElement('b', { class: 'num', text: formatAge(row.age_days) })),
+          createElement('div', null, createElement('span', { text: 'Growth Multiplier' }), createElement('b', { class: 'num', text: String(row.growth_multiplier) })),
+          createElement('div', null, createElement('span', { text: 'Urgency Factor' }), createElement('b', { class: 'num', text: String(row.urgency_factor) })),
+          createElement('div', null, createElement('span', { text: 'Implied Valuation' }), createElement('b', { class: 'num', text: formatUsd(row.implied_value_usd) }))
+        ),
+        createElement('p', { class: 'sub', text: `Engine version ${dataset.model_version}. Confidence tier: ${row.confidence.toUpperCase()}.` })
+      )
+    );
 
-    if (typeof dialog.showModal === 'function') {
-      if (!dialog.open) dialog.showModal();
+    modalDialog.appendChild(
+      createElement('section', { class: 'detail-section' },
+        createElement('h3', { text: 'Recommended Farm Plan' }),
+        createElement('ol', { class: 'steps' },
+          steps.map((s) =>
+            createElement('li', null,
+              createElement('b', { text: s.text }),
+              createElement('span', { class: 'cost', text: `Cost: ${s.cost} | Time: ${s.time}` })
+            )
+          )
+        )
+      )
+    );
+
+    if (typeof modalDialog.showModal === 'function') {
+      if (!modalDialog.open) modalDialog.showModal();
     } else {
-      dialog.setAttribute('open', '');
+      modalDialog.setAttribute('open', '');
     }
   }
 
-  function render() {
-    app.textContent = '';
-    var shell = el('div', { class: 'shell' });
-    shell.appendChild(lede());
-    shell.appendChild(controls());
-    shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
-    if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+  function renderApp() {
+    rootEl.textContent = '';
+    const mainShell = createElement('div', { class: 'shell' });
+    mainShell.appendChild(renderLede());
+    mainShell.appendChild(renderControls());
+    mainShell.appendChild(appState.activeTab === 'pre-token' ? renderBoardTable() : renderLiveTable());
+    if (appState.activeTab === 'pre-token') mainShell.appendChild(renderModelPanel());
 
-    app.textContent = '';
-    app.appendChild(stickyHeader());
-    app.appendChild(shell);
-    app.setAttribute('aria-busy', 'false');
-    if (!dialog.isConnected) app.appendChild(dialog);
-    if (state.selected) openDetail(state.selected);
+    rootEl.appendChild(renderHeader());
+    rootEl.appendChild(mainShell);
+    rootEl.setAttribute('aria-busy', 'false');
+
+    if (!modalDialog.isConnected) rootEl.appendChild(modalDialog);
+    if (appState.activeSlug) openDetailModal(appState.activeSlug);
   }
 
-  readHash();
-  render();
-  window.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && dialog.open) dialog.close();
+  readUrlHash();
+  renderApp();
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modalDialog.open) {
+      modalDialog.close();
+    }
   });
 })();

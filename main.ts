@@ -45,7 +45,8 @@ if (validationError !== null) {
 }
 
 mkdirSync(outputDir, { recursive: true });
-writeFileSync(join(outputDir, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+const boardRowLines = board.map((r) => JSON.stringify(r)).join('\n');
+writeFileSync(join(outputDir, 'board.json'), `{"rows":[${board.length > 0 ? '\n' + boardRowLines + '\n' : ''}]}\n`);
 writeFileSync(join(outputDir, 'data.js'), dataScript(radar));
 
 function mirrorDirectoryFiles(src: string, dest: string): string[] {
