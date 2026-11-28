@@ -45,7 +45,7 @@ if (validationError !== null) {
 }
 
 mkdirSync(outputDir, { recursive: true });
-const boardRowLines = board.map((r) => JSON.stringify(r)).join('\n');
+const boardRowLines = board.map((r) => JSON.stringify(r)).join(',\n');
 writeFileSync(join(outputDir, 'board.json'), `{"rows":[${board.length > 0 ? '\n' + boardRowLines + '\n' : ''}]}\n`);
 writeFileSync(join(outputDir, 'data.js'), dataScript(radar));
 
